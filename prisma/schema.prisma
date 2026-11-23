@@ -1,0 +1,279 @@
+// Sutra data model.
+// Industry-neutral: raw material -> (recipe) -> product -> order -> invoice.
+// SQLite for local dev; switch provider to "postgresql" for deployment.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Cluster {
+  id        String     @id @default(cuid())
+  slug      String     @unique
+  name      String // "Chanderi Handloom Cluster"
+  city      String
+  state     String
+  industry  String // key into src/lib/industries.ts
+  producers Producer[]
+}
+
+model Producer {
+  id            String   @id @default(cuid())
+  slug          String   @unique
+  clusterId     String
+  cluster       Cluster  @relation(fields: [clusterId], references: [id])
+  name          String // person: "Rohit Kushwaha"
+  businessName  String // "Kushwaha Handloom"
+  city          String
+  state         String
+  phone         String
+  gstin         String?
+  language      String   @default("hi")
+  machines      Int // number of looms / lathes / kilns / workers
+  story         String // English story shown to buyers
+  avatarColor   String   @default("#B4441F")
+  joinedAt      DateTime @default(now())
+  onTimeRate    Float    @default(0.9) // 0..1, from delivery history
+  ordersDone    Int      @default(0)
+  agentCutPct   Float    @default(25) // what agents took before Sutra (for impact)
+
+  materials     Material[]
+  products      Product[]
+  movements     StockMovement[]
+  purchases     Purchase[]
+  orders        Order[]
+  invoices      Invoice[]
+  ledger        LedgerEntry[]
+  alerts        Alert[]
+  messages      Message[]
+  supplierOrders SupplierOrder[]
+}
+
+model Supplier {
+  id           String   @id @default(cuid())
+  name         String
+  city         String
+  state        String
+  phone        String
+  gstin        String
+  leadTimeDays Int
+  materials    Material[]
+  purchases    Purchase[]
+  supplierOrders SupplierOrder[]
+}
+
+model Material {
+  id          String   @id @default(cuid())
+  producerId  String
+  producer    Producer @relation(fields: [producerId], references: [id])
+  supplierId  String?
+  supplier    Supplier? @relation(fields: [supplierId], references: [id])
+  name        String // "Mulberry silk yarn"
+  nameHi      String // "रेशम धागा"
+  unit        String // "kg", "sheet", "m"
+  hsn         String
+  gstRate     Float // percent
+  costPerUnit Float
+  stock       Float
+  recipes     RecipeItem[]
+  movements   StockMovement[]
+  purchaseItems PurchaseItem[]
+  supplierOrders SupplierOrder[]
+}
+
+model Product {
+  id                    String   @id @default(cuid())
+  producerId            String
+  producer              Producer @relation(fields: [producerId], references: [id])
+  slug                  String   @unique
+  name                  String
+  nameHi                String
+  category              String
+  story                 String // buyer-facing English description
+  price                 Float // wholesale price per unit (pre-GST)
+  mrp                   Float // typical retail price, used for impact numbers
+  hsn                   String
+  gstRate               Float
+  stock                 Int // finished units ready to ship
+  unitsPerMachinePerWeek Float
+  imageUrl              String?
+  palette               String   @default("#B4441F,#F4D9A6") // used to render a product swatch when no photo
+  published             Boolean  @default(true)
+  createdAt             DateTime @default(now())
+  recipe                RecipeItem[]
+  movements             StockMovement[]
+  orders                Order[]
+}
+
+model RecipeItem {
+  id         String   @id @default(cuid())
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  materialId String
+  material   Material @relation(fields: [materialId], references: [id])
+  qtyPerUnit Float
+}
+
+// Every change to stock is a movement. Usage history drives the reorder prediction.
+model StockMovement {
+  id         String    @id @default(cuid())
+  producerId String
+  producer   Producer  @relation(fields: [producerId], references: [id])
+  materialId String?
+  material   Material? @relation(fields: [materialId], references: [id])
+  productId  String?
+  product    Product?  @relation(fields: [productId], references: [id])
+  kind       String // PURCHASE | CONSUME | PRODUCE | SALE | ADJUST
+  qty        Float // positive = in, negative = out
+  note       String?
+  source     String    @default("app") // app | voice | bill | whatsapp | seed
+  createdAt  DateTime  @default(now())
+}
+
+model Purchase {
+  id         String   @id @default(cuid())
+  producerId String
+  producer   Producer @relation(fields: [producerId], references: [id])
+  supplierId String
+  supplier   Supplier @relation(fields: [supplierId], references: [id])
+  billNo     String
+  billDate   DateTime
+  taxable    Float
+  cgst       Float
+  sgst       Float
+  igst       Float
+  total      Float
+  gstinValid Boolean  @default(true)
+  source     String   @default("bill") // bill | manual | seed
+  createdAt  DateTime @default(now())
+  items      PurchaseItem[]
+}
+
+model PurchaseItem {
+  id         String   @id @default(cuid())
+  purchaseId String
+  purchase   Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  materialId String
+  material   Material @relation(fields: [materialId], references: [id])
+  qty        Float
+  rate       Float
+  amount     Float
+}
+
+model SupplierOrder {
+  id         String   @id @default(cuid())
+  producerId String
+  producer   Producer @relation(fields: [producerId], references: [id])
+  supplierId String
+  supplier   Supplier @relation(fields: [supplierId], references: [id])
+  materialId String
+  material   Material @relation(fields: [materialId], references: [id])
+  qty        Float
+  status     String   @default("SENT") // SENT | RECEIVED
+  message    String
+  createdAt  DateTime @default(now())
+}
+
+model Buyer {
+  id       String  @id @default(cuid())
+  name     String // contact person
+  business String
+  city     String
+  state    String
+  gstin    String?
+  phone    String
+  orders   Order[]
+}
+
+model Order {
+  id            String    @id @default(cuid())
+  code          String    @unique // "SUT-1042"
+  producerId    String
+  producer      Producer  @relation(fields: [producerId], references: [id])
+  productId     String
+  product       Product   @relation(fields: [productId], references: [id])
+  buyerId       String?
+  buyer         Buyer?    @relation(fields: [buyerId], references: [id])
+  channel       String // MARKETPLACE | DIRECT | AGENT
+  status        String // QUOTED | CONFIRMED | IN_PRODUCTION | DISPATCHED | DELIVERED | DECLINED
+  qty           Int
+  rate          Float
+  wantedBy      DateTime?
+  promisedQtyByWanted Int?
+  fullDate      DateTime? // date when the full qty can be delivered
+  quoteNote     String?
+  parentId      String? // for cluster bulk orders split across producers
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deliveredAt   DateTime?
+  invoices      Invoice[]
+  messages      Message[]
+}
+
+model Invoice {
+  id         String   @id @default(cuid())
+  number     String   @unique
+  kind       String // TAX | PROFORMA
+  producerId String
+  producer   Producer @relation(fields: [producerId], references: [id])
+  orderId    String?
+  order      Order?   @relation(fields: [orderId], references: [id])
+  buyerName  String
+  buyerGstin String?
+  buyerState String
+  itemName   String
+  hsn        String
+  qty        Float
+  rate       Float
+  taxable    Float
+  gstRate    Float
+  cgst       Float
+  sgst       Float
+  igst       Float
+  total      Float
+  issuedAt   DateTime @default(now())
+}
+
+model LedgerEntry {
+  id         String    @id @default(cuid())
+  producerId String
+  producer   Producer  @relation(fields: [producerId], references: [id])
+  party      String
+  direction  String // RECEIVE (they owe us) | PAY (we owe them)
+  amount     Float
+  note       String
+  dueDate    DateTime?
+  settled    Boolean   @default(false)
+  createdAt  DateTime  @default(now())
+}
+
+model Alert {
+  id         String   @id @default(cuid())
+  producerId String
+  producer   Producer @relation(fields: [producerId], references: [id])
+  kind       String // ORDER | LOW_STOCK | PAYMENT | GST | INFO
+  title      String
+  titleHi    String
+  body       String
+  bodyHi     String
+  href       String?
+  read       Boolean  @default(false)
+  createdAt  DateTime @default(now())
+}
+
+model Message {
+  id         String   @id @default(cuid())
+  producerId String
+  producer   Producer @relation(fields: [producerId], references: [id])
+  orderId    String?
+  order      Order?   @relation(fields: [orderId], references: [id])
+  sender     String // BUYER | PRODUCER | SUTRA
+  text       String // original
+  textHi     String? // Hindi version shown to producer
+  textEn     String? // English version shown to buyer
+  createdAt  DateTime @default(now())
+}
